@@ -7,7 +7,7 @@ import urllib.parse
 import json  # JSON操作用
 
 # 事前に定義するダミーのユーザー情報（ユーザー名: shogo, パスワード: test123）
-VALID_USERNAME = "demo1"
+VALID_USERNAME = "scentier_demo"
 VALID_PASSWORD = "test123"
 
 # セッション状態にログイン状態とステップ管理の初期値を設定
