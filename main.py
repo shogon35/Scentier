@@ -7,7 +7,7 @@ import urllib.parse
 import json  # JSON操作用
 
 # 事前に定義するダミーのユーザー情報（ユーザー名: shogo, パスワード: test123）
-VALID_USERNAME = "shogo"
+VALID_USERNAME = "demo1"
 VALID_PASSWORD = "test123"
 
 # セッション状態にログイン状態とステップ管理の初期値を設定
@@ -91,17 +91,17 @@ def load_data(sheet_name, dummy):
 
 # ------------------------------------------
 # GAS Webアプリ実行用の基本URL（GET用）
-GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxNUCChCm9UEJ6MyY5_DxA5UtT8y7iqC7oQ7BnB8y-QmsfBwG0DM3DKJGoV--002ypY/exec"
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbz2NFONM9WOwis0hTvGi46hyPl0NF2RJkxMYtZmKDJ1yaeyWx2fXRuQmUIWXcHPIbJL/exec"
 
 # 既存のGETリクエスト用関数
 def run_gas(sheet_name):
     try:
-        info = sheet_info[sheet_name]
-        gas_function = info.get("gas_function", "")
-        gas_url = f"{GAS_WEB_APP_URL}?sheet={urllib.parse.quote(sheet_name)}&function={urllib.parse.quote(gas_function)}"
-        response = requests.get(gas_url, verify=False)
-        response.raise_for_status()
-        st.success(f"GAS関数 '{gas_function}' が実行されました")
+        with st.spinner('実行中です。しばらくお待ちください...'):
+            info = sheet_info[sheet_name]
+            gas_function = info.get("gas_function", "")
+            gas_url = f"{GAS_WEB_APP_URL}?sheet={urllib.parse.quote(sheet_name)}&function={urllib.parse.quote(gas_function)}"
+            response = requests.get(gas_url, verify=False)
+            response.raise_for_status()
     except Exception as e:
         st.error(f"GASの実行中にエラーが発生しました: {e}")
 
@@ -132,6 +132,42 @@ def main():
         st.write("このアプリはスプレッドシートをデータベースとして利用し、複数シートに対応しています。")
         sheet_name = st.sidebar.selectbox("シートを選択してください", list(sheet_info.keys()))
         st.write(f"現在選択中のシート：**{sheet_name}**")
+        
+        # --- 「競合LP一覧DB」選択時の処理 ---
+        if sheet_name == "競合LP一覧DB":
+            st.markdown("### 競合LP URLの更新")
+            competitor_lp_url = st.text_input("競合LPのURL", key="competitor_lp_url")
+            if st.button("データ更新", key="update_lp"):
+                # 入力チェック：URLが空の場合はエラー表示
+                if not competitor_lp_url.strip():
+                    st.error("競合LPのURLを入力してください。")
+                else:
+                    # POSTリクエストの value として競合LPのURLを送信する
+                    result = update_sheet("updateCompetitorLP", competitor_lp_url.strip())
+                    st.success("データ更新の結果: " + result)
+                    st.cache_data.clear()
+                    # 最新のデータを再取得して表示する
+                    updated_data = load_data(sheet_name, time.time())
+
+        
+        # --- 「企業情報一覧DB」選択時の処理 ---
+        if sheet_name == "企業情報一覧DB":
+            st.markdown("### 追加データの入力")
+            company_url = st.text_input("会社情報のURL", key="company_url")
+            lp_url = st.text_input("LPのURL", key="lp_url")
+            if st.button("データ追加", key="add_data"):
+                # 入力チェック：どちらか一方または両方が空の場合はエラー表示
+                if not company_url.strip() or not lp_url.strip():
+                    st.error("会社情報とLPのURLの両方を入力してください。")
+                else:
+                    payload_value = {"会社情報": company_url, "LP": lp_url}
+                    result = update_sheet("addCompanyData", payload_value)
+                    st.success("データ追加の結果: " + result)
+                    st.cache_data.clear()
+                    # 最新のデータを再取得して表示する
+                    updated_data = load_data(sheet_name, time.time())
+        
+        # --- 共通：「シートを実行」ボタン ---
         if st.button(f"{sheet_name}を実行", type='primary'):
             run_gas(sheet_name)
             st.cache_data.clear()
@@ -148,9 +184,10 @@ def main():
         )
         data = load_data(sheet_name, time.time())
         st.dataframe(data)
-    
+        
+
     elif page == "構成案作成":
-        st.title("構成案作成")
+        st.title("Scentier LPO 構成案作成")
         st.write("以下の各ステップに沿って、構成案の作成を進めてください。")
         
         # ----- Step 1: ペルソナ選択 -----
@@ -197,9 +234,7 @@ def main():
                     st.error("カスタマージャーニーDBに選択されたペルソナのデータは存在しません。")
                     if st.button("カスタマージャーニーを生成する"):
                         result = update_sheet("updateCustomerJourney", st.session_state.selected_persona)
-                        with st.spinner('実行中です。しばらくお待ちください...'):
-                            run_gas("カスタマージャーニーDB")
-                        st.success('実行が完了しました！')
+                        run_gas("カスタマージャーニーDB")
                         st.cache_data.clear()  # キャッシュをクリアして最新のデータを取得
                         journey_df = load_data("カスタマージャーニーDB", time.time())
                         journey_info = journey_df[journey_df["ペルソナ"] == st.session_state.selected_persona]
@@ -235,9 +270,7 @@ def main():
                     st.error("訴求ポイント一覧DBに選択されたペルソナのデータは存在しません。")
                     if st.button("訴求ポイントを生成する"):
                         result = update_sheet("updateAppealPoint", st.session_state.selected_persona)
-                        with st.spinner('実行中です。しばらくお待ちください...'):
-                            run_gas("訴求ポイント一覧DB")
-                        st.success('実行が完了しました！')
+                        run_gas("訴求ポイント一覧DB")
                         st.cache_data.clear()
                         appeal_df = load_data("訴求ポイント一覧DB", time.time())
                         matched_appeal = appeal_df[appeal_df["ペルソナ"] == st.session_state.selected_persona]
@@ -271,9 +304,7 @@ def main():
                     st.error("構成案一覧DBに選択されたペルソナのデータは存在しません。")
                     if st.button("構成案を生成する"):
                         result = update_sheet("updateDraftComposition", st.session_state.selected_persona)
-                        with st.spinner('実行中です。しばらくお待ちください...'):
-                            run_gas("構成案一覧DB")
-                        st.success('実行が完了しました！')
+                        run_gas("構成案一覧DB")
                         st.cache_data.clear()
                         draft_df = load_data("構成案一覧DB", time.time())
                         matched_draft = draft_df[draft_df["ペルソナ"] == st.session_state.selected_persona]
