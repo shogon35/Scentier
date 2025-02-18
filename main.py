@@ -17,6 +17,8 @@ if "draft_step" not in st.session_state:
     st.session_state.draft_step = 1
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = ""
+if "selected_method_value" not in st.session_state:
+    st.session_state.selected_method_value = ""
 
 # ------------------------------------------
 # ログインフォームの表示
@@ -97,7 +99,7 @@ def load_data(sheet_name, dummy):
 
 # ------------------------------------------
 # GAS Webアプリ実行用の基本URL（GET用）
-GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx8MRD6SrP9qYVFyY6i4yuUumT4875iUpNfCvqsU6ImoEQ7wVRPZZHRM5rQusejiAMj/exec"
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzQO5LnEiQQzNTpK56x2SDa3G1IZ_UjQCbRfwBz44ba1VuA9I7ooVjaIebin_jT-2s/exec"
 
 # 既存のGETリクエスト用関数
 def run_gas(sheet_name):
@@ -129,15 +131,19 @@ def get_aggregate_response(sent_value):
     if log_df.empty:
         return None
     try:
-        last_row = log_df.iloc[-1]
-        if str(last_row.iloc[1]).strip() == sent_value.strip():
-            return last_row.iloc[2]
-        else:
-            matching = log_df[log_df.iloc[:, 1].astype(str).str.strip() == sent_value.strip()]
-            if not matching.empty:
-                return matching.iloc[-1, 2]
+        # 送信時に区切り文字 "===シートデータ===" が連結されている場合、
+        # その前半（元の質問テキスト）だけをキーとして比較する
+        delimiter = "===シートデータ==="
+        def extract_question(text):
+            if delimiter in text:
+                return text.split(delimiter)[0].strip()
             else:
-                return None
+                return text.strip()
+        matching = log_df[log_df.iloc[:, 1].astype(str).apply(extract_question) == sent_value.strip()]
+        if not matching.empty:
+            return matching.iloc[-1, 2]
+        else:
+            return None
     except Exception as ex:
         st.error("対話ログのパースエラー: " + str(ex))
         return None
@@ -206,34 +212,33 @@ def main():
         
         # --- 下部に共通の「Scentier エージェント機能」エリア ---
         st.markdown("### Scentier エージェント")
-        aggregate_text = st.text_area("質問を入力してください", key="aggregate_text")
-        include_sheet_data = st.checkbox("データベースの情報を参照する", key="include_sheet_data")
+        original_question = st.text_area("質問を入力してください", key="aggregate_text")
+        include_sheet_data = st.checkbox("データベースの情報も送信する", key="include_sheet_data")
         if st.button("実行", key="execute_aggregate"):
-            if not aggregate_text.strip():
+            if not original_question.strip():
                 st.error("テキストを入力してください。")
             else:
                 additional_value = ""
                 if include_sheet_data:
                     current_data = load_data(sheet_name, time.time())
-                    # CSV形式ではなく、整形済みのテキスト形式に変換（DataFrameのto_string()を利用）
                     additional_value = "\n\n===シートデータ===\n" + current_data.to_string(index=False)
-                message_to_send = aggregate_text.strip() + additional_value
+                message_to_send = original_question.strip() + additional_value
                 with st.spinner("送信中です。しばらくお待ちください…"):
                     result = update_sheet("aggregateData", message_to_send)
                     st.success("データ送信成功")
                 # 待機時間は、シートデータ送信の場合は10秒、そうでなければ5秒
-                wait_time = 3 if include_sheet_data else 2
+                wait_time = 10 if include_sheet_data else 5
                 with st.spinner("応答を取得中です。しばらくお待ちください…"):
                     time.sleep(wait_time)
-                    response_value = get_aggregate_response(aggregate_text.strip())
+                    response_value = get_aggregate_response(original_question.strip())
                 if response_value:
-                    st.info("Scentier エージェントからの応答: \n " + response_value)
+                    st.info("Scentier エージェントからの応答: \n" + response_value)
                 else:
                     st.error("応答を取得できませんでした。")
                     if st.button("データ更新", key="retry_aggregate"):
                         with st.spinner("再度応答を取得中です。しばらくお待ちください…"):
                             time.sleep(wait_time)
-                            response_value_retry = get_aggregate_response(aggregate_text.strip())
+                            response_value_retry = get_aggregate_response(original_question.strip())
                         if response_value_retry:
                             st.info("Scentier エージェントからの応答: " + response_value_retry)
                         else:
@@ -243,56 +248,70 @@ def main():
         st.title("Scentier LPO 構成案作成")
         st.write("以下の各ステップに沿って、構成案の作成を進めてください。")
         
-        # ----- Step 1: ペルソナ選択 -----
-        st.header("Step 1: ペルソナ選択")
-        persona_df = load_data("ペルソナ・訴求DB", time.time())
-        if "ペルソナ名称" in persona_df.columns:
-            persona_options = ["---- 選択してください ----"] + sorted(persona_df["ペルソナ名称"].dropna().unique().tolist())
-            selected = st.selectbox("ペルソナ名称を選択してください", persona_options)
-            if selected != "---- 選択してください ----":
-                st.write(f"選択されたペルソナ：**{selected}**")
-                st.session_state.selected_persona = selected
-                # 選択したペルソナの詳細情報を expander で表示
-                persona_info = persona_df[persona_df["ペルソナ名称"] == selected]
-                with st.expander("選択したペルソナの詳細情報"):
-                    for idx, row in persona_info.iterrows():
-                        st.markdown(f"**AIDMA**: {row.get('AIDMA', '')}")
-                        st.markdown(f"**ペルソナ**: {row.get('ペルソナ', '')}")
-                        st.markdown(f"**行動**: {row.get('行動', '')}")
-                        st.markdown(f"**知りたい情報**: {row.get('知りたい情報', '')}")
-                        st.markdown(f"**感情**: {row.get('感情', '')}")
-                        st.markdown(f"**訴求ポイント**: {row.get('訴求ポイント', '')}")
-                        st.markdown(f"**具体的なペルソナ**: {str(row.get('具体的なペルソナ', '')).replace('<br>', '\n')}")
-                        st.markdown("---")
-            else:
-                st.session_state.selected_persona = ""
-        else:
-            st.error("ペルソナ・訴求DBに『ペルソナ名称』列が見つかりません。")
-            return
+        # --- 新たな Step 1: 作成方法の選択 ---
+        creation_method = st.selectbox(
+            "構成案作成方法を選択してください",
+            [
+                "ペルソナから構成案を作成",
+                "訴求ポイントから構成案を作成",
+                "強みから構成案を作成",
+                "期待・Gainから構成案作成"
+            ]
+        )
         
-        if st.button("Step 1: 次に進む"):
-            if st.session_state.selected_persona == "":
-                st.warning("ペルソナを選択してください。")
-                st.stop()
+        if creation_method == "ペルソナから構成案を作成":
+            st.header("Step 1: ペルソナ選択")
+            persona_df = load_data("ペルソナ・訴求DB", time.time())
+            if "ペルソナ名称" in persona_df.columns:
+                persona_options = ["---- 選択してください ----"] + sorted(persona_df["ペルソナ名称"].dropna().unique().tolist())
+                selected = st.selectbox("ペルソナ名称を選択してください", persona_options)
+                if selected != "---- 選択してください ----":
+                    st.write(f"選択されたペルソナ：**{selected}**")
+                    st.session_state.selected_persona = selected
+                    persona_info = persona_df[persona_df["ペルソナ名称"] == selected]
+                    with st.expander("選択したペルソナの詳細情報"):
+                        for idx, row in persona_info.iterrows():
+                            st.markdown(f"**AIDMA**: {row.get('AIDMA', '')}")
+                            st.markdown(f"**ペルソナ**: {row.get('ペルソナ', '')}")
+                            st.markdown(f"**行動**: {row.get('行動', '')}")
+                            st.markdown(f"**知りたい情報**: {row.get('知りたい情報', '')}")
+                            st.markdown(f"**感情**: {row.get('感情', '')}")
+                            st.markdown(f"**訴求ポイント**: {row.get('訴求ポイント', '')}")
+                            st.markdown(f"**具体的なペルソナ**: {str(row.get('具体的なペルソナ', '')).replace('<br>', '\n')}")
+                            st.markdown("---")
             else:
-                st.session_state.draft_step = 2
-        
-        # ----- Step 2: カスタマージャーニー作成 -----
-        if st.session_state.draft_step >= 2:
-            st.header("Step 2: カスタマージャーニー作成")
-            journey_df = load_data("カスタマージャーニーDB", time.time())
-            if "ペルソナ" in journey_df.columns:
-                journey_info = journey_df[journey_df["ペルソナ"] == st.session_state.selected_persona]
-                if journey_info.empty:
-                    st.error("カスタマージャーニーDBに選択されたペルソナのデータは存在しません。")
-                    if st.button("カスタマージャーニーを生成する"):
-                        result = update_sheet("updateCustomerJourney", st.session_state.selected_persona)
-                        run_gas("カスタマージャーニーDB")
-                        st.cache_data.clear()  # キャッシュをクリアして最新のデータを取得
-                        journey_df = load_data("カスタマージャーニーDB", time.time())
-                        journey_info = journey_df[journey_df["ペルソナ"] == st.session_state.selected_persona]
-                        st.success(result)
-                        with st.expander("更新後のカスタマージャーニーDB内の対象データ"):
+                st.error("ペルソナ・訴求DBに『ペルソナ名称』列が見つかりません。")
+            if st.button("Step 1: 次に進む"):
+                if st.session_state.selected_persona == "":
+                    st.warning("ペルソナを選択してください。")
+                    st.stop()
+                else:
+                    st.session_state.draft_step = 2
+                
+                # ----- Step 2: カスタマージャーニー作成 -----
+            if st.session_state.draft_step >= 2:
+                st.header("Step 2: カスタマージャーニー作成")
+                journey_df = load_data("カスタマージャーニーDB", time.time())
+                if "ペルソナ" in journey_df.columns:
+                    journey_info = journey_df[journey_df["ペルソナ"] == st.session_state.selected_persona]
+                    if journey_info.empty:
+                        st.error("カスタマージャーニーDBに選択されたペルソナのデータは存在しません。")
+                        if st.button("カスタマージャーニーを生成する"):
+                            result = update_sheet("updateCustomerJourney", st.session_state.selected_persona)
+                            run_gas("カスタマージャーニーDB")
+                            st.cache_data.clear()  # キャッシュをクリアして最新のデータを取得
+                            journey_df = load_data("カスタマージャーニーDB", time.time())
+                            journey_info = journey_df[journey_df["ペルソナ"] == st.session_state.selected_persona]
+                            st.success(result)
+                            with st.expander("更新後のカスタマージャーニーDB内の対象データ"):
+                                for idx, row in journey_info.iterrows():
+                                    st.markdown(f"**認知（Attention）→**: {row.get('認知（Attention）→', '')}")
+                                    st.markdown(f"**興味（Interest）→**: {row.get('興味（Interest）→', '')}")
+                                    st.markdown(f"**欲求（Desire）→**: {row.get('欲求（Desire）→', '')}")
+                                    st.markdown(f"**行動（Action）→**: {row.get('行動（Action）', '')}")
+                                    st.markdown("---")
+                    else:
+                        with st.expander("カスタマージャーニーDB内の対象データ"):
                             for idx, row in journey_info.iterrows():
                                 st.markdown(f"**認知（Attention）→**: {row.get('認知（Attention）→', '')}")
                                 st.markdown(f"**興味（Interest）→**: {row.get('興味（Interest）→', '')}")
@@ -300,89 +319,143 @@ def main():
                                 st.markdown(f"**行動（Action）→**: {row.get('行動（Action）', '')}")
                                 st.markdown("---")
                 else:
-                    with st.expander("カスタマージャーニーDB内の対象データ"):
-                        for idx, row in journey_info.iterrows():
-                            st.markdown(f"**認知（Attention）→**: {row.get('認知（Attention）→', '')}")
-                            st.markdown(f"**興味（Interest）→**: {row.get('興味（Interest）→', '')}")
-                            st.markdown(f"**欲求（Desire）→**: {row.get('欲求（Desire）→', '')}")
-                            st.markdown(f"**行動（Action）→**: {row.get('行動（Action）', '')}")
-                            st.markdown("---")
-            else:
-                st.error("カスタマージャーニーDBに『ペルソナ』列が見つかりません。")
+                    st.error("カスタマージャーニーDBに『ペルソナ』列が見つかりません。")
+                
+                if st.button("Step 2: 次に進む"):
+                    st.session_state.draft_step = 3
             
-            if st.button("Step 2: 次に進む"):
-                st.session_state.draft_step = 3
-        
-        # ----- Step 3: 訴求ポイント作成 -----
-        if st.session_state.draft_step >= 3:
-            st.header("Step 3: 訴求ポイント作成")
-            appeal_df = load_data("訴求ポイント一覧DB", time.time())
-            if "ペルソナ" in appeal_df.columns:
-                matched_appeal = appeal_df[appeal_df["ペルソナ"] == st.session_state.selected_persona]
-                if matched_appeal.empty:
-                    st.error("訴求ポイント一覧DBに選択されたペルソナのデータは存在しません。")
-                    if st.button("訴求ポイントを生成する"):
-                        result = update_sheet("updateAppealPoint", st.session_state.selected_persona)
-                        run_gas("訴求ポイント一覧DB")
-                        st.cache_data.clear()
-                        appeal_df = load_data("訴求ポイント一覧DB", time.time())
-                        matched_appeal = appeal_df[appeal_df["ペルソナ"] == st.session_state.selected_persona]
-                        st.success(result)
-                        with st.expander("更新後の訴求ポイント一覧DB内の対象データ"):
+            # ----- Step 3: 訴求ポイント作成 -----
+            if st.session_state.draft_step >= 3:
+                st.header("Step 3: 訴求ポイント作成")
+                appeal_df = load_data("訴求ポイント一覧DB", time.time())
+                if "ペルソナ" in appeal_df.columns:
+                    matched_appeal = appeal_df[appeal_df["ペルソナ"] == st.session_state.selected_persona]
+                    if matched_appeal.empty:
+                        st.error("訴求ポイント一覧DBに選択されたペルソナのデータは存在しません。")
+                        if st.button("訴求ポイントを生成する"):
+                            result = update_sheet("updateAppealPoint", st.session_state.selected_persona)
+                            run_gas("訴求ポイント一覧DB")
+                            st.cache_data.clear()
+                            appeal_df = load_data("訴求ポイント一覧DB", time.time())
+                            matched_appeal = appeal_df[appeal_df["ペルソナ"] == st.session_state.selected_persona]
+                            st.success(result)
+                            with st.expander("更新後の訴求ポイント一覧DB内の対象データ"):
+                                for idx, row in matched_appeal.iterrows():
+                                    st.markdown(f"**{idx} - {row.get('ペルソナ', '')}**")
+                                    for col, value in row.items():
+                                        st.markdown(f"**{col}**: {value}")
+                                    st.markdown("---")
+                    else:
+                        with st.expander("訴求ポイント一覧DB内の対象データ"):
                             for idx, row in matched_appeal.iterrows():
                                 st.markdown(f"**{idx} - {row.get('ペルソナ', '')}**")
                                 for col, value in row.items():
                                     st.markdown(f"**{col}**: {value}")
                                 st.markdown("---")
                 else:
-                    with st.expander("訴求ポイント一覧DB内の対象データ"):
-                        for idx, row in matched_appeal.iterrows():
-                            st.markdown(f"**{idx} - {row.get('ペルソナ', '')}**")
-                            for col, value in row.items():
-                                st.markdown(f"**{col}**: {value}")
-                            st.markdown("---")
-            else:
-                st.error("訴求ポイント一覧DBに『ペルソナ』列が見つかりません。")
+                    st.error("訴求ポイント一覧DBに『ペルソナ』列が見つかりません。")
+                
+                if st.button("Step 3: 次に進む"):
+                    st.session_state.draft_step = 4
             
-            if st.button("Step 3: 次に進む"):
-                st.session_state.draft_step = 4
-        
-        # ----- Step 4: 構成案作成 -----
-        if st.session_state.draft_step >= 4:
-            st.header("Step 4: 構成案作成")
-            draft_df = load_data("構成案一覧DB", time.time())
-            if "ペルソナ" in draft_df.columns:
-                matched_draft = draft_df[draft_df["ペルソナ"] == st.session_state.selected_persona]
-                if matched_draft.empty:
-                    st.error("構成案一覧DBに選択されたペルソナのデータは存在しません。")
-                    if st.button("構成案を生成する"):
-                        result = update_sheet("updateDraftComposition", st.session_state.selected_persona)
-                        run_gas("構成案一覧DB")
-                        st.cache_data.clear()
-                        draft_df = load_data("構成案一覧DB", time.time())
-                        matched_draft = draft_df[draft_df["ペルソナ"] == st.session_state.selected_persona]
-                        st.success(result)
-                        with st.expander("更新後の構成案一覧DB内の対象データ"):
+            # ----- Step 4: 構成案作成 -----
+            if st.session_state.draft_step >= 4:
+                st.header("Step 4: 構成案作成")
+                draft_df = load_data("構成案一覧DB", time.time())
+                if "ペルソナ" in draft_df.columns:
+                    matched_draft = draft_df[draft_df["ペルソナ"] == st.session_state.selected_persona]
+                    if matched_draft.empty:
+                        st.error("構成案一覧DBに選択されたペルソナのデータは存在しません。")
+                        if st.button("構成案を生成する"):
+                            result = update_sheet("updateDraftComposition", st.session_state.selected_persona)
+                            run_gas("構成案一覧DB")
+                            st.cache_data.clear()
+                            draft_df = load_data("構成案一覧DB", time.time())
+                            matched_draft = draft_df[draft_df["ペルソナ"] == st.session_state.selected_persona]
+                            st.success(result)
+                            with st.expander("更新後の構成案一覧DB内の対象データ"):
+                                for idx, row in matched_draft.iterrows():
+                                    st.markdown(f"**{idx} - {row.get('ペルソナ', '')}**")
+                                    for col, value in row.items():
+                                        st.markdown(f"**{col}**: {value}")
+                                    st.markdown("---")
+                    else:
+                        with st.expander("構成案一覧DB内の対象データ"):
                             for idx, row in matched_draft.iterrows():
                                 st.markdown(f"**{idx} - {row.get('ペルソナ', '')}**")
                                 for col, value in row.items():
                                     st.markdown(f"**{col}**: {value}")
                                 st.markdown("---")
                 else:
-                    with st.expander("構成案一覧DB内の対象データ"):
-                        for idx, row in matched_draft.iterrows():
-                            st.markdown(f"**{idx} - {row.get('ペルソナ', '')}**")
-                            for col, value in row.items():
-                                st.markdown(f"**{col}**: {value}")
-                            st.markdown("---")
-            else:
-                st.error("構成案一覧DBに『ペルソナ』列が見つかりません。")
+                    st.error("構成案一覧DBに『ペルソナ』列が見つかりません。")
+                
+                if st.button("Step 4: 次に進む"):
+                    st.session_state.draft_step = 5
             
-            if st.button("Step 4: 次に進む"):
-                st.session_state.draft_step = 5
-        
-        if st.session_state.draft_step >= 5:
-            st.success("構成案の作成が完了しました！")
+            if st.session_state.draft_step >= 5:
+                st.success("構成案の作成が完了しました！")
+        else:  # 訴求ポイント、強み、期待・Gainの場合
+            if creation_method == "訴求ポイントから構成案を作成":
+                target_column = "訴求ポイント"
+                category_name = "訴求ポイント"
+            elif creation_method == "強みから構成案を作成":
+                target_column = "紐づく強み"
+                category_name = "紐づく強み"
+            elif creation_method == "期待・Gainから構成案作成":
+                target_column = "紐づくターゲットの悩み、期待"
+                category_name = "紐づくターゲットの悩み、期待"
+            else:
+                target_column = ""
+                category_name = ""
+            
+            appeal_df = load_data("訴求ポイント一覧DB", time.time())
+            if target_column not in appeal_df.columns:
+                st.error(f"訴求ポイント一覧DBに『{target_column}』列が見つかりません。")
+            else:
+                unique_values = sorted(appeal_df[target_column].dropna().unique().tolist())
+                if unique_values:
+                    selected_value = st.selectbox(f"{target_column}を選択してください", unique_values)
+                    st.session_state.selected_method_value = selected_value
+                else:
+                    st.error(f"{target_column}のデータが存在しません。")
+            
+            if st.button("決定", key="decide_method"):
+                if not st.session_state.selected_method_value:
+                    st.error("値を選択してください。")
+                else:
+                    # 対象の列で選択された値に一致する行を取得
+                    matching = appeal_df[appeal_df[target_column] == st.session_state.selected_method_value]
+                    if matching.empty:
+                        st.error("該当するペルソナが見つかりません。")
+                    else:
+                        # 複数行ある場合は最も下部の行を取得
+                        persona_name = matching.iloc[-1]["ペルソナ"]
+                        # 区切り文字「｜」を付与してメッセージを作成
+                        message_to_send = f"{persona_name}@{category_name}"
+                        result = update_sheet("updateDraftComposition", message_to_send)
+                        st.success("構成案更新の結果: " + result)
+                        run_gas("構成案一覧DB")
+                        
+                        # 構成案一覧DBから、更新後の「構成案」と「構成意図」を取得し、expanderで表示
+                        draft_df = load_data("構成案一覧DB", time.time())
+                        filtered = draft_df[draft_df["ペルソナ"] == persona_name]
+                        with st.expander("出力された構成案と構成意図"):
+                            if not filtered.empty:
+                                # 複数データがある場合、最も下部の行を取得する
+                                last_row = filtered.iloc[-1]
+                                constructed_proposal = last_row.get("構成案", "データがありません")
+                                construction_intent = last_row.get("構成意図", "データがありません")
+                                st.markdown("**構成案:**")
+                                st.write(constructed_proposal)
+                                st.markdown("**構成意図:**")
+                                st.write(construction_intent)
+                            else:
+                                st.info("該当する構成案はまだ出力されていません。")
+            
+            if st.session_state.selected_method_value:
+                st.info("選択された値: " + st.session_state.selected_method_value)
+            else:
+                st.warning("値が選択されていません。")
     
     st.markdown(
         """
