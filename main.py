@@ -6,7 +6,7 @@ import time
 import urllib.parse
 import json  # JSON操作用
 
-# 事前に定義するダミーのユーザー情報（ユーザー名: shogo, パスワード: test123）
+# 事前に定義するダミーのユーザー情報（ユーザー名: scentier_demo, パスワード: test123）
 VALID_USERNAME = "scentier_demo"
 VALID_PASSWORD = "test123"
 
@@ -32,7 +32,8 @@ def login():
             st.error("ユーザー名またはパスワードが違います。")
 
 # ------------------------------------------
-# 各シートに対応する情報を管理する辞書（既存処理用）
+# 各シートに対応する情報を管理する辞書
+# ※「対話ログ」シートのgidは実際のものに置き換えてください
 sheet_info = {
     "企業情報一覧DB": {
         "gid": "1256434993",
@@ -68,6 +69,11 @@ sheet_info = {
         "gid": "1201145926",
         "start_row": 11,
         "gas_function": "analyzeDraftComposition"
+    },
+    "対話ログ": {   # 追加：集約データ送信先シート
+        "gid": "990974404",  # 実際のgidに置き換える
+        "start_row": 2,
+        "gas_function": "callDifyAPI"
     }
 }
 
@@ -91,7 +97,7 @@ def load_data(sheet_name, dummy):
 
 # ------------------------------------------
 # GAS Webアプリ実行用の基本URL（GET用）
-GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbz2NFONM9WOwis0hTvGi46hyPl0NF2RJkxMYtZmKDJ1yaeyWx2fXRuQmUIWXcHPIbJL/exec"
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx8MRD6SrP9qYVFyY6i4yuUumT4875iUpNfCvqsU6ImoEQ7wVRPZZHRM5rQusejiAMj/exec"
 
 # 既存のGETリクエスト用関数
 def run_gas(sheet_name):
@@ -113,9 +119,28 @@ def update_sheet(command, value):
         "value": value
     }
     headers = {"Content-Type": "application/json"}
-    # ここでは、GASのdoPost()として公開しているURLを利用します
     response = requests.post(GAS_WEB_APP_URL, headers=headers, data=json.dumps(payload), verify=False)
     return response.text
+
+# ------------------------------------------
+# 対話ログシートから、最新の送信値に対応するレスポンス（C列）を取得する関数
+def get_aggregate_response(sent_value):
+    log_df = load_data("対話ログ", time.time())
+    if log_df.empty:
+        return None
+    try:
+        last_row = log_df.iloc[-1]
+        if str(last_row.iloc[1]).strip() == sent_value.strip():
+            return last_row.iloc[2]
+        else:
+            matching = log_df[log_df.iloc[:, 1].astype(str).str.strip() == sent_value.strip()]
+            if not matching.empty:
+                return matching.iloc[-1, 2]
+            else:
+                return None
+    except Exception as ex:
+        st.error("対話ログのパースエラー: " + str(ex))
+        return None
 
 # ------------------------------------------
 # アプリ本体のメイン処理
@@ -124,7 +149,6 @@ def main():
         login()
         return
 
-    # ページ選択：通常ページと構成案作成ページ
     page = st.sidebar.radio("ページ選択", options=["データベース確認", "構成案作成"])
     
     if page == "データベース確認":
@@ -133,30 +157,25 @@ def main():
         sheet_name = st.sidebar.selectbox("シートを選択してください", list(sheet_info.keys()))
         st.write(f"現在選択中のシート：**{sheet_name}**")
         
-        # --- 「競合LP一覧DB」選択時の処理 ---
+        # --- 各DBシートごとの個別処理 ---
         if sheet_name == "競合LP一覧DB":
             st.markdown("### 競合LP URLの更新")
             competitor_lp_url = st.text_input("競合LPのURL", key="competitor_lp_url")
             if st.button("データ更新", key="update_lp"):
-                # 入力チェック：URLが空の場合はエラー表示
                 if not competitor_lp_url.strip():
                     st.error("競合LPのURLを入力してください。")
                 else:
-                    # POSTリクエストの value として競合LPのURLを送信する
                     result = update_sheet("updateCompetitorLP", competitor_lp_url.strip())
                     st.success("データ更新の結果: " + result)
                     st.cache_data.clear()
-                    # 最新のデータを再取得して表示する
                     updated_data = load_data(sheet_name, time.time())
-
+                    st.dataframe(updated_data)
         
-        # --- 「企業情報一覧DB」選択時の処理 ---
         if sheet_name == "企業情報一覧DB":
             st.markdown("### 追加データの入力")
             company_url = st.text_input("会社情報のURL", key="company_url")
             lp_url = st.text_input("LPのURL", key="lp_url")
             if st.button("データ追加", key="add_data"):
-                # 入力チェック：どちらか一方または両方が空の場合はエラー表示
                 if not company_url.strip() or not lp_url.strip():
                     st.error("会社情報とLPのURLの両方を入力してください。")
                 else:
@@ -164,8 +183,8 @@ def main():
                     result = update_sheet("addCompanyData", payload_value)
                     st.success("データ追加の結果: " + result)
                     st.cache_data.clear()
-                    # 最新のデータを再取得して表示する
                     updated_data = load_data(sheet_name, time.time())
+                    st.dataframe(updated_data)
         
         # --- 共通：「シートを実行」ボタン ---
         if st.button(f"{sheet_name}を実行", type='primary'):
@@ -185,7 +204,41 @@ def main():
         data = load_data(sheet_name, time.time())
         st.dataframe(data)
         
-
+        # --- 下部に共通の「Scentier エージェント機能」エリア ---
+        st.markdown("### Scentier エージェント")
+        aggregate_text = st.text_area("質問を入力してください", key="aggregate_text")
+        include_sheet_data = st.checkbox("データベースの情報を参照する", key="include_sheet_data")
+        if st.button("実行", key="execute_aggregate"):
+            if not aggregate_text.strip():
+                st.error("テキストを入力してください。")
+            else:
+                additional_value = ""
+                if include_sheet_data:
+                    current_data = load_data(sheet_name, time.time())
+                    # CSV形式ではなく、整形済みのテキスト形式に変換（DataFrameのto_string()を利用）
+                    additional_value = "\n\n===シートデータ===\n" + current_data.to_string(index=False)
+                message_to_send = aggregate_text.strip() + additional_value
+                with st.spinner("送信中です。しばらくお待ちください…"):
+                    result = update_sheet("aggregateData", message_to_send)
+                    st.success("データ送信成功")
+                # 待機時間は、シートデータ送信の場合は10秒、そうでなければ5秒
+                wait_time = 3 if include_sheet_data else 2
+                with st.spinner("応答を取得中です。しばらくお待ちください…"):
+                    time.sleep(wait_time)
+                    response_value = get_aggregate_response(aggregate_text.strip())
+                if response_value:
+                    st.info("Scentier エージェントからの応答: \n " + response_value)
+                else:
+                    st.error("応答を取得できませんでした。")
+                    if st.button("データ更新", key="retry_aggregate"):
+                        with st.spinner("再度応答を取得中です。しばらくお待ちください…"):
+                            time.sleep(wait_time)
+                            response_value_retry = get_aggregate_response(aggregate_text.strip())
+                        if response_value_retry:
+                            st.info("Scentier エージェントからの応答: " + response_value_retry)
+                        else:
+                            st.error("再度応答を取得できませんでした。")
+    
     elif page == "構成案作成":
         st.title("Scentier LPO 構成案作成")
         st.write("以下の各ステップに沿って、構成案の作成を進めてください。")
